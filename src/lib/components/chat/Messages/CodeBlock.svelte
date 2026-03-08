@@ -6,7 +6,12 @@
 
 	import PyodideWorker from '$lib/workers/pyodide.worker?worker';
 	import { executeCode } from '$lib/apis/utils';
-	import { copyToClipboard, renderMermaidDiagram, renderVegaVisualization } from '$lib/utils';
+	import {
+		copyToClipboard,
+		initMermaid,
+		renderMermaidDiagram,
+		renderVegaVisualization
+	} from '$lib/utils';
 
 	import 'highlight.js/styles/github-dark.min.css';
 
@@ -17,6 +22,7 @@
 	import ChevronUpDown from '$lib/components/icons/ChevronUpDown.svelte';
 	import CommandLine from '$lib/components/icons/CommandLine.svelte';
 	import Cube from '$lib/components/icons/Cube.svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -37,7 +43,7 @@
 	export let code = '';
 	export let attributes = {};
 
-	export let className = 'mb-2';
+	export let className = '';
 	export let editorClassName = '';
 	export let stickyButtonsClassName = 'top-0';
 
@@ -54,8 +60,8 @@
 
 	let _token = null;
 
-	let mermaidHtml = null;
-	let vegaHtml = null;
+	let renderHTML = null;
+	let renderError = null;
 
 	let highlightedCode = null;
 	let executing = false;
@@ -323,34 +329,44 @@
 		};
 	};
 
+	let mermaid = null;
+	const renderMermaid = async (code) => {
+		if (!mermaid) {
+			mermaid = await initMermaid();
+		}
+		return await renderMermaidDiagram(mermaid, code);
+	};
+
 	const render = async () => {
 		onUpdate(token);
 		if (lang === 'mermaid' && (token?.raw ?? '').slice(-4).includes('```')) {
 			try {
-				mermaidHtml = await renderMermaidDiagram(code);
+				renderHTML = await renderMermaid(code);
 			} catch (error) {
 				console.error('Failed to render mermaid diagram:', error);
 				const errorMsg = error instanceof Error ? error.message : String(error);
-				toast.error($i18n.t('Failed to render diagram') + `: ${errorMsg}`);
-				mermaidHtml = null;
+				renderError = $i18n.t('Failed to render diagram') + `: ${errorMsg}`;
+				renderHTML = null;
 			}
 		} else if (
 			(lang === 'vega' || lang === 'vega-lite') &&
 			(token?.raw ?? '').slice(-4).includes('```')
 		) {
 			try {
-				vegaHtml = await renderVegaVisualization(code);
+				renderHTML = await renderVegaVisualization(code);
 			} catch (error) {
 				console.error('Failed to render Vega visualization:', error);
 				const errorMsg = error instanceof Error ? error.message : String(error);
-				toast.error($i18n.t('Failed to render diagram') + `: ${errorMsg}`);
-				vegaHtml = null;
+				renderError = $i18n.t('Failed to render visualization') + `: ${errorMsg}`;
+				renderHTML = null;
 			}
 		}
 	};
 
 	$: if (token) {
-		if (JSON.stringify(token) !== JSON.stringify(_token)) {
+		if (token.text !== _token?.text || token.raw !== _token?.raw) {
+			_token = token;
+		} else if (JSON.stringify(token) !== JSON.stringify(_token)) {
 			_token = token;
 		}
 	}
@@ -404,40 +420,41 @@
 
 <div>
 	<div
-		class="relative {className} flex flex-col rounded-3xl border border-gray-100 dark:border-gray-850 my-0.5"
+		class="relative {className} flex flex-col rounded-2xl border border-gray-100/30 dark:border-gray-850/30 my-0.5"
 		dir="ltr"
 	>
-		{#if lang === 'mermaid'}
-			{#if mermaidHtml}
+		{#if ['mermaid', 'vega', 'vega-lite'].includes(lang)}
+			{#if renderHTML}
 				<SvgPanZoom
-					className=" rounded-3xl max-h-fit overflow-hidden"
-					svg={mermaidHtml}
+					className=" rounded-2xl max-h-fit overflow-hidden"
+					svg={renderHTML}
 					content={_token.text}
 				/>
 			{:else}
-				<pre class="mermaid">{code}</pre>
-			{/if}
-		{:else if lang === 'vega' || lang === 'vega-lite'}
-			{#if vegaHtml}
-				<SvgPanZoom
-					className="rounded-3xl max-h-fit overflow-hidden"
-					svg={vegaHtml}
-					content={_token.text}
-				/>
-			{:else}
-				<pre class="vega">{code}</pre>
+				<div class="p-3">
+					{#if renderError}
+						<div
+							class="flex gap-2.5 border px-4 py-3 border-red-600/10 bg-red-600/10 rounded-2xl mb-2"
+						>
+							{renderError}
+						</div>
+					{/if}
+					<pre>{code}</pre>
+				</div>
 			{/if}
 		{:else}
 			<div
-				class="absolute left-0 right-0 py-2.5 pr-3 text-text-300 pl-4.5 text-xs font-medium dark:text-white"
+				class="sticky {stickyButtonsClassName} left-0 right-0 py-1.5 px-3 gap-2 flex items-center justify-end w-full z-10 text-xs text-black dark:text-white bg-white dark:bg-black rounded-t-2xl"
 			>
-				{lang}
-			</div>
+				<div class="flex-1 truncate">
+					<Tooltip content={lang} placement="top-start">
+						<span class=" truncate text-ellipsis">
+							{lang}
+						</span>
+					</Tooltip>
+				</div>
 
-			<div
-				class="sticky {stickyButtonsClassName} left-0 right-0 py-2 pr-3 flex items-center justify-end w-full z-10 text-xs text-black dark:text-white"
-			>
-				<div class="flex items-center gap-0.5">
+				<div class="flex items-center gap-0.5 shrink-0">
 					<button
 						class="flex gap-1 items-center bg-none border-none transition rounded-md px-1.5 py-0.5 bg-white dark:bg-black"
 						on:click={collapseCodeBlock}
@@ -502,13 +519,13 @@
 			</div>
 
 			<div
-				class="language-{lang} rounded-t-3xl -mt-9 {editorClassName
+				class="language-{lang} rounded-t-2xl -mt-8 {editorClassName
 					? editorClassName
 					: executing || stdout || stderr || result
 						? ''
-						: 'rounded-b-3xl'} overflow-hidden"
+						: 'rounded-b-2xl'} overflow-hidden"
 			>
-				<div class=" pt-8 bg-white dark:bg-black"></div>
+				<div class=" pt-6.5 bg-white dark:bg-black"></div>
 
 				{#if !collapsed}
 					{#if edit}
@@ -538,7 +555,7 @@
 					{/if}
 				{:else}
 					<div
-						class="bg-white dark:bg-black dark:text-white rounded-b-3xl! pt-0.5 pb-3 px-4 flex flex-col gap-2 text-xs"
+						class="bg-white dark:bg-black dark:text-white rounded-b-2xl! pt-0.5 pb-2 px-4 flex flex-col gap-2 text-xs"
 					>
 						<span class="text-gray-500 italic">
 							{$i18n.t('{{COUNT}} hidden lines', {
@@ -557,19 +574,19 @@
 
 				{#if executing || stdout || stderr || result || files}
 					<div
-						class="bg-gray-50 dark:bg-black dark:text-white rounded-b-3xl! py-4 px-4 flex flex-col gap-2"
+						class="bg-gray-50 dark:bg-black dark:text-white rounded-b-2xl! py-4 px-4 flex flex-col gap-2"
 					>
 						{#if executing}
 							<div class=" ">
-								<div class=" text-gray-500 text-xs mb-1">{$i18n.t('STDOUT/STDERR')}</div>
+								<div class=" text-gray-500 text-sm mb-1">{$i18n.t('STDOUT/STDERR')}</div>
 								<div class="text-sm">{$i18n.t('Running...')}</div>
 							</div>
 						{:else}
 							{#if stdout || stderr}
 								<div class=" ">
-									<div class=" text-gray-500 text-xs mb-1">{$i18n.t('STDOUT/STDERR')}</div>
+									<div class=" text-gray-500 text-sm mb-1">{$i18n.t('STDOUT/STDERR')}</div>
 									<div
-										class="text-sm {stdout?.split('\n')?.length > 100
+										class="text-sm font-mono whitespace-pre-wrap {stdout?.split('\n')?.length > 100
 											? `max-h-96`
 											: ''}  overflow-y-auto"
 									>
@@ -579,7 +596,7 @@
 							{/if}
 							{#if result || files}
 								<div class=" ">
-									<div class=" text-gray-500 text-xs mb-1">{$i18n.t('RESULT')}</div>
+									<div class=" text-gray-500 text-sm mb-1">{$i18n.t('RESULT')}</div>
 									{#if result}
 										<div class="text-sm">{`${JSON.stringify(result)}`}</div>
 									{/if}
